@@ -53,6 +53,7 @@ const DEFAULT_STATE = {
   focusStartedAt: null,
   focusEndsAt: null,
   focusDurationMinutes: null,
+  focusWebsiteMode: "allow-only",
   allowedSites: [],
   savedSets: [],
 
@@ -244,6 +245,11 @@ async function loadState() {
       ? "allow-only"
       : "block-list";
 
+  state.focusWebsiteMode =
+    state.focusWebsiteMode === "block-list"
+      ? "block-list"
+      : "allow-only";
+
   state.blockSites = normalizeSites(state.blockSites);
 
   state.allowedSites = normalizeSites(state.allowedSites);
@@ -308,11 +314,19 @@ function toEngineState(state) {
     activeStartedAt = state.focusStartedAt;
     activeEndsAt = state.focusEndsAt;
 
+    const behavior =
+      state.focusWebsiteMode === "block-list"
+        ? "block-list"
+        : "allow-only";
+
     for (const domain of state.allowedSites || []) {
       rules.push({
-        id: `legacy-allow-${domain}`,
+        id: `legacy-focus-${domain}`,
         type: "domain",
-        action: "allow",
+        action:
+          behavior === "allow-only"
+            ? "allow"
+            : "block",
         domain
       });
     }
@@ -321,7 +335,7 @@ function toEngineState(state) {
       id: "legacy-focus",
       name: "Focus",
       mode: "focus",
-      behavior: "allow-only",
+      behavior,
       enabled: true,
       profileId: null,
       rules,
@@ -611,20 +625,30 @@ function buildRules(state, defaultSearch) {
     return rules;
   }
 
-  rules.push({
-    id: RULE_BLOCK,
-    priority: 1,
-    action: {
-      type: "redirect",
-      redirect: {
-        extensionPath: "/focuslock-blocked.html"
+  const focusBlockList =
+    state.focusWebsiteMode === "block-list";
+
+  if (!focusBlockList) {
+    /*
+     * Allow-only Focus Mode:
+     * block all HTTP(S) main-frame navigation first,
+     * then allow explicitly selected sites.
+     */
+    rules.push({
+      id: RULE_BLOCK,
+      priority: 1,
+      action: {
+        type: "redirect",
+        redirect: {
+          extensionPath: "/focuslock-blocked.html"
+        }
+      },
+      condition: {
+        urlFilter: "|https*",
+        resourceTypes: ["main_frame"]
       }
-    },
-    condition: {
-      urlFilter: "|https*",
-      resourceTypes: ["main_frame"]
-    }
-  });
+    });
+  }
 
   let ruleId = RULE_ALLOW_BASE;
 
@@ -632,9 +656,16 @@ function buildRules(state, defaultSearch) {
     rules.push({
       id: ruleId++,
       priority: 100,
-      action: {
-        type: "allow"
-      },
+      action: focusBlockList
+        ? {
+            type: "redirect",
+            redirect: {
+              extensionPath: "/focuslock-blocked.html"
+            }
+          }
+        : {
+            type: "allow"
+          },
       condition: {
         urlFilter: `||${domain}^`,
         resourceTypes: ["main_frame"]
@@ -645,8 +676,11 @@ function buildRules(state, defaultSearch) {
   /*
    * Default search engine remains automatically available
    * during Focus Mode.
+   *
+   * In block-list mode it is already available because there
+   * is no global block rule.
    */
-  if (defaultSearch && defaultSearch.filter) {
+  if (!focusBlockList && defaultSearch && defaultSearch.filter) {
     rules.push({
       id: ruleId++,
       priority: 110,
@@ -731,7 +765,8 @@ function isAllowedWebUrl(
   defaultSearch,
   blockActive = false,
   blockMode = "block-list",
-  blockSites = []
+  blockSites = [],
+  focusWebsiteMode = "allow-only"
 ) {
   try {
     const parsed = new URL(url);
@@ -791,6 +826,16 @@ function isAllowedWebUrl(
      * FOCUS MODE
      * --------------------------------------------------------
      */
+
+    if (focusWebsiteMode === "block-list") {
+      const blocked =
+        allowedSites.some(domain =>
+          host === domain ||
+          host.endsWith("." + domain)
+        );
+
+      return !blocked;
+    }
 
     if (
       allowedSites.some(domain =>
@@ -928,7 +973,8 @@ async function enforceTabs() {
           defaultSearch,
           state.blockActive,
           state.blockMode,
-          state.blockSites
+          state.blockSites,
+          state.focusWebsiteMode
         );
 
       if (!engineAllowed || !legacyAllowed) {
@@ -1224,7 +1270,8 @@ browser.tabs.onUpdated.addListener(
           defaultSearch,
           state.blockActive,
           state.blockMode,
-          state.blockSites
+          state.blockSites,
+          state.focusWebsiteMode
         );
 
       if (!engineAllowed || !legacyAllowed) {
@@ -1437,6 +1484,10 @@ browser.runtime.onMessage.addListener(
 
         state.focusDurationMinutes = minutes;
         state.allowedSites = sites;
+        state.focusWebsiteMode =
+          message.websiteMode === "block-list"
+            ? "block-list"
+            : "allow-only";
         state.focusActive = true;
         state.focusStartedAt = startedAt;
         state.focusEndsAt =
