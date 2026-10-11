@@ -3,7 +3,7 @@
 FocusLock is a strict Firefox focus extension for timed, distraction-free browsing.
 
 It lets you create focused browsing sessions where only the websites you explicitly allow are accessible.
-
+# currently we are making a newer version of FocusLock.
 ## Features
 
 - Timed Focus Mode
